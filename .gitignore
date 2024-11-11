@@ -1,0 +1,9 @@
+/venv/
+
+**/__pycache__/
+**/.vscode/
+**/build/
+
+# 민감 정보 따로 관리
+/config/
+**/sdkconfig*
