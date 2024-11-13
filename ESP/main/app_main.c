@@ -12,20 +12,32 @@
 #include "mqtt_client.h"
 #include "driver/gpio.h"
 #include "freertos/queue.h"
+#include "esp_timer.h"
 
 #define GPIO_INPUT_PIN 23               // 입력 핀으로 사용할 GPIO 핀 번호
 #define ESP_INTR_FLAG_DEFAULT 0
+#define DEBOUNCE_DELAY 200  // 디바운스 지연 시간 (밀리초)
+
 
 static const char *TAG = "MQTT_GPIO_APP"; // 통합된 TAG
 static volatile int button_press_count = 0;  // 버튼 입력 횟수 카운트 변수
+volatile unsigned long last_interrupt_time = 0;  // 마지막 인터럽트 발생 시간
+
 static esp_mqtt_client_handle_t client;      // MQTT 클라이언트 핸들
 static QueueHandle_t gpio_evt_queue = NULL;  // 버튼 이벤트 큐
 
 // 인터럽트 핸들러
 static void IRAM_ATTR gpio_isr_handler(void *arg) {
-    button_press_count++;  // 카운트 증가
-    int count = button_press_count;
-    xQueueSendFromISR(gpio_evt_queue, &count, NULL);  // 버튼 이벤트를 큐에 전달
+    // 현재 시간(밀리초 단위)을 읽음
+    unsigned long current_time = esp_timer_get_time() / 1000;
+
+    // 마지막 인터럽트와 현재 시간의 차이가 DEBOUNCE_DELAY보다 크면 이벤트 처리
+    if (current_time - last_interrupt_time > DEBOUNCE_DELAY) {
+        button_press_count++;  // 카운트 증가
+        int count = button_press_count;
+        xQueueSendFromISR(gpio_evt_queue, &count, NULL);  // 버튼 이벤트를 큐에 전달
+        last_interrupt_time = current_time;  // 마지막 인터럽트 발생 시간 갱신
+    }
 }
 
 // GPIO 초기화 함수
@@ -34,8 +46,8 @@ void init_gpio() {
         .intr_type = GPIO_INTR_NEGEDGE,           // 폴링 엣지에서 인터럽트 발생 (버튼 눌림 감지)
         .mode = GPIO_MODE_INPUT,                  // 입력 모드로 설정
         .pin_bit_mask = (1ULL << GPIO_INPUT_PIN), // 제어할 핀 설정
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .pull_up_en = GPIO_PULLUP_ENABLE          // 풀업 활성화
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,       // 풀다운 활성화
+        .pull_up_en = GPIO_PULLUP_DISABLE          
     };
     gpio_config(&io_conf);
 
@@ -54,7 +66,7 @@ void mqtt_publish_task(void *arg) {
         // 큐에서 버튼 눌림 이벤트 수신
         if (xQueueReceive(gpio_evt_queue, &count, portMAX_DELAY)) {
             ESP_LOGI(TAG, "Button pressed %d times", count);
-            esp_mqtt_client_publish(client, "req/call", "Button press event", 0, 1, 0);
+            esp_mqtt_client_publish(client, "req/call", "Button press event", 0, 0, 0);
             ESP_LOGI(TAG, "Published button press event to req/call");
         }
     }
@@ -69,6 +81,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     switch ((esp_mqtt_event_id_t)event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+            esp_mqtt_client_publish(client, "req/call", "Hello", 0, 0, 0);
             break;
         case MQTT_EVENT_DATA:
             ESP_LOGI(TAG, "MQTT_EVENT_DATA");
